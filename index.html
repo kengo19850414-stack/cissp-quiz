@@ -166,6 +166,25 @@ h1 {
 /* hint type label */
 .hint-type { font-weight: 700; margin-bottom: 10px; font-size: .78rem; letter-spacing: .06em; opacity: .9; }
 
+/* hint header (label + 読み上げボタン) */
+.hint-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.hint-head .hint-type { margin-bottom: 0; }
+.speak-btn {
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.20);
+  color: inherit;
+  font-size: .74rem;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background .15s;
+}
+.speak-btn:hover { background: rgba(255,255,255,.16); }
+.speak-btn.speaking { background: rgba(255,255,255,.24); }
+
 /* hint structured sections */
 .hint-section { margin-bottom: 10px; }
 .hint-section:last-child { margin-bottom: 0; }
@@ -287,7 +306,10 @@ h1 {
       <div class="options" id="optionsWrap"></div>
 
       <div class="hint-box" id="hintBox">
-        <div class="hint-type" id="hintType"></div>
+        <div class="hint-head">
+          <div class="hint-type" id="hintType"></div>
+          <button class="speak-btn" id="speakBtn" onclick="toggleSpeak()">🔊 読み上げ</button>
+        </div>
         <div id="hintContent"></div>
       </div>
 
@@ -297,8 +319,9 @@ h1 {
       </div>
       <div class="kbd-hint" id="kbdHint">⌨ 1〜4：選択 ／ Enter・→：次へ ／ 0：答えを見る</div>
 
-      <div style="margin-top:12px">
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost" style="font-size:.78rem;padding:6px 12px" onclick="toggleDomainAcc()">ドメイン別正答率 ▾</button>
+        <button class="btn btn-ghost" id="autoSpeakBtn" style="font-size:.78rem;padding:6px 12px" onclick="toggleAutoSpeak()">🔊 自動読み上げ：OFF</button>
       </div>
       <div class="domain-acc" id="domainAcc">
         <div class="domain-acc-title" style="margin-top:10px">D1 正答率</div>
@@ -2630,6 +2653,7 @@ let state = {
   score: 0,
   stats: {},
   showDomainAcc: false,
+  autoSpeak: false,     // 回答後に解説を自動読み上げ
   optOrder: [0,1,2,3],   // 表示順→元インデックスの対応（選択肢シャッフル用）
   // ── 模試モード ──
   examMode: false,
@@ -2658,6 +2682,7 @@ function saveState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       stats: state.stats,
       memoDone: memoDone,
+      autoSpeak: state.autoSpeak,
     }));
   } catch (e) { /* localStorage 無効時は何もしない */ }
 }
@@ -2671,6 +2696,7 @@ function loadState() {
     if (data.memoDone) {
       MEMOS.forEach(m => { if (m.text in data.memoDone) m.done = data.memoDone[m.text]; });
     }
+    if (typeof data.autoSpeak === 'boolean') state.autoSpeak = data.autoSpeak;
   } catch (e) { /* 破損データは無視 */ }
 }
 
@@ -2792,6 +2818,7 @@ function renderQuestion() {
 
   document.getElementById('hintBox').className = 'hint-box';
   document.getElementById('hintContent').innerHTML = '';
+  if (TTS_SUPPORTED) { window.speechSynthesis.cancel(); ttsActive = false; updateSpeakBtn(); }
   const skipBtn = document.getElementById('btnSkip');
   skipBtn.style.display = state.examMode ? 'none' : '';   // 模試中は答え表示を無効化
   skipBtn.disabled = false;
@@ -2841,6 +2868,7 @@ function selectOption(idx) {
   saveState();
 
   showHint(q);
+  if (state.autoSpeak) speakText(buildSpeechText(q));
   document.getElementById('btnNext').disabled = false;
   document.getElementById('btnSkip').disabled = true;
   document.getElementById('scoreLabel').textContent = '✓ ' + state.score;
@@ -2859,6 +2887,7 @@ function skipQuestion() {
   });
 
   showHint(q);
+  if (state.autoSpeak) speakText(buildSpeechText(q));
   document.getElementById('btnNext').disabled = false;
   document.getElementById('btnSkip').disabled = true;
 }
@@ -2892,6 +2921,75 @@ function showHint(q) {
     '<div class="hint-section">' +
       '<div class="hint-section-title">▌ 初学者の落とし穴</div>' + q.hintTrap +
     '</div>';
+}
+
+// ── 解説の読み上げ（Web Speech API）─────────────────────────
+const TTS_SUPPORTED = ('speechSynthesis' in window);
+let ttsActive = false;
+
+// HTMLタグを除いた素のテキストを取り出す（読み上げ用）
+function stripHtml(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html || '';
+  return (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim();
+}
+
+// 解説の読み上げ原稿を組み立てる（正解＋ISC2 5構造）
+function buildSpeechText(q) {
+  const parts = [];
+  parts.push('正解は、' + stripHtml(q.options[q.answer]) + '。');
+  if (q.hintCore)     parts.push('問題の核心。'       + stripHtml(q.hintCore));
+  if (q.hintCorrect)  parts.push('正解の理由。'       + stripHtml(q.hintCorrect));
+  if (q.hintPractice) parts.push('実務での考え方。'   + stripHtml(q.hintPractice));
+  if (q.hintTrap)     parts.push('初学者の落とし穴。' + stripHtml(q.hintTrap));
+  return parts.join(' ');
+}
+
+function stopSpeak() {
+  if (TTS_SUPPORTED) window.speechSynthesis.cancel();
+  ttsActive = false;
+  updateSpeakBtn();
+}
+
+function speakText(text) {
+  if (!TTS_SUPPORTED || !text) return;
+  window.speechSynthesis.cancel();          // 前の読み上げを止めてから
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ja-JP';
+  u.rate = 1.0;
+  u.onend   = () => { ttsActive = false; updateSpeakBtn(); };
+  u.onerror = () => { ttsActive = false; updateSpeakBtn(); };
+  ttsActive = true;
+  updateSpeakBtn();
+  window.speechSynthesis.speak(u);
+}
+
+// 🔊ボタン：再生中なら停止、そうでなければ現在の問題の解説を読み上げ
+function toggleSpeak() {
+  if (!TTS_SUPPORTED) return;
+  if (ttsActive || window.speechSynthesis.speaking) { stopSpeak(); return; }
+  const q = QUESTIONS[state.queue[state.current]];
+  if (q) speakText(buildSpeechText(q));
+}
+
+function updateSpeakBtn() {
+  const btn = document.getElementById('speakBtn');
+  if (!btn) return;
+  if (ttsActive) { btn.textContent = '⏹ 停止'; btn.classList.add('speaking'); }
+  else { btn.textContent = '🔊 読み上げ'; btn.classList.remove('speaking'); }
+}
+
+function toggleAutoSpeak() {
+  state.autoSpeak = !state.autoSpeak;
+  saveState();
+  updateAutoSpeakBtn();
+  if (!state.autoSpeak) stopSpeak();
+}
+
+function updateAutoSpeakBtn() {
+  const btn = document.getElementById('autoSpeakBtn');
+  if (!btn) return;
+  btn.textContent = '🔊 自動読み上げ：' + (state.autoSpeak ? 'ON' : 'OFF');
 }
 
 function nextQuestion() { state.current++; renderQuestion(); }
@@ -3165,6 +3263,7 @@ function renderMemos() {
 // TAB SWITCH
 // ============================================================
 function switchTab(name) {
+  if (TTS_SUPPORTED) { window.speechSynthesis.cancel(); ttsActive = false; updateSpeakBtn(); }
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
@@ -3232,6 +3331,16 @@ initStats();
 buildQueue('all');
 renderQuestion();
 renderMemos();
+
+// 音声合成（読み上げ）非対応の端末ではボタンを隠す
+if (!TTS_SUPPORTED) {
+  const sb = document.getElementById('speakBtn');
+  const ab = document.getElementById('autoSpeakBtn');
+  if (sb) sb.style.display = 'none';
+  if (ab) ab.style.display = 'none';
+} else {
+  updateAutoSpeakBtn();
+}
 </script>
 </body>
 </html>
