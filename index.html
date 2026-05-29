@@ -323,6 +323,7 @@ h1 {
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost" style="font-size:.78rem;padding:6px 12px" onclick="toggleDomainAcc()">ドメイン別正答率 ▾</button>
         <button class="btn btn-ghost" id="autoSpeakBtn" style="font-size:.78rem;padding:6px 12px" onclick="toggleAutoSpeak()">🔊 自動読み上げ：OFF</button>
+        <button class="btn btn-ghost" id="speakRateBtn" style="font-size:.78rem;padding:6px 12px" onclick="cycleSpeakRate()">⏩ 速度：1x</button>
       </div>
       <div class="domain-acc" id="domainAcc">
         <div class="domain-acc-title" style="margin-top:10px">D1 正答率</div>
@@ -2660,6 +2661,7 @@ let state = {
   stats: {},
   showDomainAcc: false,
   autoSpeak: false,     // 回答後に解説を自動読み上げ
+  speakRate: 1.0,       // 読み上げ速度（0.75〜2.0）
   optOrder: [0,1,2,3],   // 表示順→元インデックスの対応（選択肢シャッフル用）
   // ── 模試モード ──
   examMode: false,
@@ -2689,6 +2691,7 @@ function saveState() {
       stats: state.stats,
       memoDone: memoDone,
       autoSpeak: state.autoSpeak,
+      speakRate: state.speakRate,
     }));
   } catch (e) { /* localStorage 無効時は何もしない */ }
 }
@@ -2703,6 +2706,7 @@ function loadState() {
       MEMOS.forEach(m => { if (m.text in data.memoDone) m.done = data.memoDone[m.text]; });
     }
     if (typeof data.autoSpeak === 'boolean') state.autoSpeak = data.autoSpeak;
+    if (typeof data.speakRate === 'number' && SPEAK_RATES.indexOf(data.speakRate) !== -1) state.speakRate = data.speakRate;
   } catch (e) { /* 破損データは無視 */ }
 }
 
@@ -3031,12 +3035,15 @@ function stopSpeak() {
   updateSpeakBtn();
 }
 
+// 読み上げ速度のプリセット（×0.75〜×2.0）
+const SPEAK_RATES = [0.75, 1.0, 1.25, 1.5, 2.0];
+
 function speakText(text) {
   if (!TTS_SUPPORTED || !text) return;
   window.speechSynthesis.cancel();          // 前の読み上げを止めてから
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ja-JP';
-  u.rate = 1.0;
+  u.rate = state.speakRate || 1.0;
   u.onend   = () => { ttsActive = false; updateSpeakBtn(); };
   u.onerror = () => { ttsActive = false; updateSpeakBtn(); };
   ttsActive = true;
@@ -3070,6 +3077,23 @@ function updateAutoSpeakBtn() {
   const btn = document.getElementById('autoSpeakBtn');
   if (!btn) return;
   btn.textContent = '🔊 自動読み上げ：' + (state.autoSpeak ? 'ON' : 'OFF');
+}
+
+// 読み上げ速度をプリセット内で順送り（末尾まで来たら先頭へ）
+function cycleSpeakRate() {
+  let i = SPEAK_RATES.indexOf(state.speakRate);
+  if (i === -1) i = SPEAK_RATES.indexOf(1.0);
+  state.speakRate = SPEAK_RATES[(i + 1) % SPEAK_RATES.length];
+  saveState();
+  updateSpeakRateBtn();
+  // 新しい速度を体感できるよう短いサンプルを読み上げ
+  if (TTS_SUPPORTED) speakText('読み上げ速度を' + state.speakRate + '倍にしました');
+}
+
+function updateSpeakRateBtn() {
+  const btn = document.getElementById('speakRateBtn');
+  if (!btn) return;
+  btn.textContent = '⏩ 速度：' + (state.speakRate || 1.0) + 'x';
 }
 
 function nextQuestion() { state.current++; renderQuestion(); }
@@ -3310,10 +3334,11 @@ const MEMOS = [
   // ── 任意の強化候補（必須ではない・今後の余力で）──
   { pri:'🟢', text:'（任意）問題数を増やす：各ドメインに問題を追加し出題プールを拡大。本番の幅広い出題に備え、合格力に最も直結する強化', done:false },
   { pri:'🟢', text:'（任意）模試の復習機能：模試終了後に間違えた問題だけをISC2 5構造解説付きで振り返る専用画面を追加', done:false },
-  { pri:'🟢', text:'（任意）読み上げの調整：解説読み上げの速度変更・声（男性/女性・音声エンジン）の選択UIを追加', done:false },
+  { pri:'🟢', text:'（任意）読み上げの調整：声（男性/女性・音声エンジン）の選択UIを追加', done:false },
   // ── UX改善（完了）──
   { pri:'✅', text:'【完了】操作性の向上：1〜4キーで選択肢を選択／Enter・→で次の問題へ／0で答えを見る、模試に「もう一度受験する」ボタンを追加', done:true },
   { pri:'✅', text:'【完了】解説の読み上げ：回答後にISC2 5構造解説を日本語音声で読み上げ（🔊ボタン＋「自動読み上げ」トグル・設定は保存・模試中はOFF）', done:true },
+  { pri:'✅', text:'【完了】読み上げ速度の変更：「⏩ 速度」ボタンで0.75x/1x/1.25x/1.5x/2xを順送り切替（設定は保存・押すたびにサンプル音声で速度を確認）。通勤学習で聞き取りやすい速度に調整可能', done:true },
   { pri:'✅', text:'【完了】スマホ表示の修正：タブが画面幅で見切れる不具合を解消（タブを折り返し表示）。iPhoneでの学習に対応', done:true },
   // ── 完了済み ──
   { pri:'✅', text:'各ドメインを20問に拡充後、試験のクセ問題を3問追加し全163問（D1/D3/D7が各21問）', done:true },
@@ -3423,10 +3448,13 @@ updateReviewBadge();
 if (!TTS_SUPPORTED) {
   const sb = document.getElementById('speakBtn');
   const ab = document.getElementById('autoSpeakBtn');
+  const rb = document.getElementById('speakRateBtn');
   if (sb) sb.style.display = 'none';
   if (ab) ab.style.display = 'none';
+  if (rb) rb.style.display = 'none';
 } else {
   updateAutoSpeakBtn();
+  updateSpeakRateBtn();
 }
 </script>
 </body>
