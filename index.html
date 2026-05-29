@@ -272,6 +272,7 @@ h1 {
 <div id="tab-quiz" class="tab-panel active">
   <div class="mode-bar">
     <button class="mode-btn active" onclick="setMode('all')">全問題（163問）</button>
+    <button class="mode-btn" id="reviewModeBtn" onclick="setMode('review')">🔁 復習</button>
     <button class="mode-btn" onclick="setMode('weak')">苦手のみ</button>
     <button class="mode-btn" onclick="setMode('new')">新試験範囲のみ</button>
     <button class="mode-btn" onclick="setMode('d1')">D1</button>
@@ -347,6 +348,11 @@ h1 {
     <div class="stat-card"><div class="stat-val" id="statTotal">0</div><div class="stat-lbl">総回答数</div></div>
     <div class="stat-card"><div class="stat-val" id="statCorrect" style="color:var(--green)">0</div><div class="stat-lbl">累積正解</div></div>
     <div class="stat-card"><div class="stat-val" id="statWeak" style="color:var(--red)">0</div><div class="stat-lbl">苦手問題数</div></div>
+    <div class="stat-card"><div class="stat-val" id="statDue" style="color:var(--orange)">0</div><div class="stat-lbl">今日の復習</div></div>
+  </div>
+  <div class="card" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+    <div style="font-size:.82rem;line-height:1.5;color:var(--text-muted)">🔁 <strong style="color:var(--text)">スマート復習</strong>：間違えた問題を間隔をあけて自動で再出題。<span id="dueMsg">定着するまで繰り返します。</span></div>
+    <button class="btn btn-primary" id="startReviewBtn" style="font-size:.8rem;padding:8px 14px;white-space:nowrap" onclick="setModeAndSwitch('review')">今日の復習をする</button>
   </div>
   <div class="card">
     <div style="font-size:.85rem;color:var(--text);margin-bottom:10px">ドメイン別正答率</div>
@@ -2730,9 +2736,60 @@ function isWeak(id) {
   return t > 0 && (s.wrong + s.skip) > s.correct;
 }
 
+// ── スマート復習（間隔反復／Leitnerシステム）──────────────────
+// box 1〜5。正解で1段昇格＝次回までの間隔が伸びる／不正解・スキップでbox1へ戻す。
+// due（次に復習すべき時刻）は box の間隔（日数）後。box/due は state.stats[id] に保存（自動永続化）。
+const SRS_INTERVALS_DAYS = { 1: 0, 2: 1, 3: 3, 4: 7, 5: 14 };
+const DAY_MS = 86400000;
+
+function scheduleSRS(id, correct) {
+  const s = state.stats[id];
+  if (!s) return;
+  let box = s.box || 1;
+  box = correct ? Math.min(box + 1, 5) : 1;   // 正解→昇格 / 不正解→box1へ
+  s.box = box;
+  s.due = Date.now() + SRS_INTERVALS_DAYS[box] * DAY_MS;
+}
+
+// 今すぐ復習すべき（due到来済みの）問題数
+function srsDueCount() {
+  const now = Date.now();
+  let n = 0;
+  QUESTIONS.forEach(q => {
+    const s = state.stats[q.id];
+    if (s && s.due != null && s.due <= now) n++;
+  });
+  return n;
+}
+
+// モードバーの「🔁 復習」ボタンと苦手タブの「今日の復習」を更新
+function updateReviewBadge() {
+  const n = srsDueCount();
+  const btn = document.getElementById('reviewModeBtn');
+  if (btn) btn.textContent = n > 0 ? ('🔁 復習 (' + n + ')') : '🔁 復習';
+  const stat = document.getElementById('statDue');
+  if (stat) stat.textContent = n;
+  const start = document.getElementById('startReviewBtn');
+  if (start) { start.disabled = (n === 0); start.style.opacity = (n === 0) ? '.5' : ''; }
+  const msg = document.getElementById('dueMsg');
+  if (msg) msg.textContent = n > 0
+    ? ('いま ' + n + ' 問が復習どきです。')
+    : '定着するまで繰り返します。間違えるとここに溜まります。';
+}
+
+function restartReview() { setMode('review'); }
+
 function buildQueue(mode) {
   let qs = QUESTIONS;
-  if (mode === 'weak') {
+  if (mode === 'review') {
+    // due到来済みの問題だけを、box昇順→due昇順（苦手・延滞順）で出題
+    const now = Date.now();
+    qs = QUESTIONS.filter(q => { const s = state.stats[q.id]; return s && s.due != null && s.due <= now; });
+    qs.sort((a, b) => {
+      const sa = state.stats[a.id], sb = state.stats[b.id];
+      return (sa.box || 1) - (sb.box || 1) || (sa.due || 0) - (sb.due || 0);
+    });
+  } else if (mode === 'weak') {
     const w = QUESTIONS.filter(q => isWeak(q.id));
     if (w.length === 0) { alert('苦手問題がまだありません。全問題から出題します。'); }
     else qs = w;
@@ -2757,7 +2814,8 @@ function buildQueue(mode) {
   } else if (mode === 'd8') {
     qs = QUESTIONS.filter(q => q.domain === 'D8');
   }
-  state.queue = shuffle(qs.map(q => QUESTIONS.indexOf(q)));
+  const idxs = qs.map(q => QUESTIONS.indexOf(q));
+  state.queue = (mode === 'review') ? idxs : shuffle(idxs);   // 復習は優先順を保持
   state.current = 0;
   state.score = 0;
   state.answered = false;
@@ -2774,6 +2832,22 @@ function renderQuestion() {
     result.classList.add('show');
     body.style.display = 'none';
     if (state.examMode) { renderExamResult(false); updateWeakTab(); return; }
+    if (state.mode === 'review') {
+      const totR = state.queue.length;
+      const rs = document.getElementById('resultScore');
+      rs.style.color = '';
+      rs.textContent = totR === 0 ? '🎉' : (state.score + ' / ' + totR);
+      document.getElementById('resultDetail').innerHTML = totR === 0
+        ? '今すぐ復習する問題はありません。<br>問題を解いて間違えると、ここに溜まっていきます。'
+        : ('今回の復習 ' + totR + ' 問が完了！🧠<br>間隔をあけて出し直すので、また時間をおいて取り組もう。');
+      const more = srsDueCount();
+      document.getElementById('resultBtns').innerHTML =
+        (more > 0 ? '<button class="btn btn-primary" onclick="restartReview()">続けて復習 (' + more + ')</button>' : '') +
+        '<button class="btn btn-ghost" onclick="setModeAndSwitch(\'all\')">全問題に戻る</button>';
+      updateWeakTab();
+      updateReviewBadge();
+      return;
+    }
     const tot = state.queue.length;
     const pct = tot > 0 ? Math.round(state.score / tot * 100) : 0;
     document.getElementById('resultScore').textContent = state.score + ' / ' + tot;
@@ -2851,7 +2925,9 @@ function selectOption(idx) {
     if (!state.examDomainStats[d]) state.examDomainStats[d] = { c:0, t:0 };
     state.examDomainStats[d].t++;
     if (correct) state.examDomainStats[d].c++;
+    scheduleSRS(q.id, correct);
     saveState();
+    updateReviewBadge();
     document.getElementById('btnNext').disabled = false;
     return;
   }
@@ -2865,7 +2941,9 @@ function selectOption(idx) {
 
   if (correct) { state.score++; state.stats[q.id].correct++; }
   else { state.stats[q.id].wrong++; }
+  scheduleSRS(q.id, correct);
   saveState();
+  updateReviewBadge();
 
   showHint(q);
   if (state.autoSpeak) speakText(buildSpeechText(q));
@@ -2880,7 +2958,9 @@ function skipQuestion() {
 
   const q = QUESTIONS[state.queue[state.current]];
   state.stats[q.id].skip++;
+  scheduleSRS(q.id, false);   // スキップ＝不正解扱いでbox1へ
   saveState();
+  updateReviewBadge();
   document.querySelectorAll('.opt-btn').forEach((btn, i) => {
     btn.disabled = true;
     if (state.optOrder[i] === q.answer) btn.classList.add('correct');
@@ -3163,7 +3243,7 @@ function setMode(mode) {
   if (state.examMode) exitExamMode();   // モード切替時は模試を解除
   state.mode = mode;
   document.querySelectorAll('.mode-btn').forEach((b, i) => {
-    b.classList.toggle('active', ['all','weak','new','d1','d2','d3','d4','d5','d6','d7','d8'][i] === mode);
+    b.classList.toggle('active', ['all','review','weak','new','d1','d2','d3','d4','d5','d6','d7','d8'][i] === mode);
   });
   buildQueue(mode);
   renderQuestion();
@@ -3176,6 +3256,7 @@ function restartQuiz() { if (state.examMode) exitExamMode(); buildQueue(state.mo
 // WEAKNESS TAB
 // ============================================================
 function updateWeakTab() {
+  updateReviewBadge();
   let tot = 0, cor = 0, wk = 0;
   QUESTIONS.forEach(q => {
     const s = state.stats[q.id];
@@ -3214,6 +3295,7 @@ function updateWeakTab() {
 // ============================================================
 const MEMOS = [
   // ── 合格に向けた追加改善（優先度順）──
+  { pri:'✅', text:'【完了】スマート復習（間隔反復／Leitner）：間違えた問題をbox1〜5で管理し、正解で復習間隔を延長・不正解/スキップでbox1へ。復習どき(due到来)の問題だけを「🔁 復習」モードで苦手・延滞順に出題し、記憶の定着を最大化。苦手タブに「今日の復習」件数も表示', done:true },
   { pri:'✅', text:'【完了】正解の偏り修正：160問中114問(71%)が正解Bだった問題を、表示時の選択肢シャッフルで解決。出題毎に正解位置がA/B/C/Dへ均等に分散し、「迷ったらB」攻略も丸暗記も不可に', done:true },
   { pri:'✅', text:'【完了】進捗の永続化（localStorage）：苦手・スコア・メモのチェック状態を自動保存しリロードでも維持。メモタブに「学習進捗をリセット」ボタンも追加', done:true },
   { pri:'✅', text:'【完了】模試モード追加：タイマー付き本番形式（ドメイン加重100問・制限120分・解答中フィードバック遮断・70%合否＋分野別正答率を表示）', done:true },
@@ -3335,6 +3417,7 @@ initStats();
 buildQueue('all');
 renderQuestion();
 renderMemos();
+updateReviewBadge();
 
 // 音声合成（読み上げ）非対応の端末ではボタンを隠す
 if (!TTS_SUPPORTED) {
