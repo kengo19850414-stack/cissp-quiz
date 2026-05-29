@@ -69,6 +69,8 @@ h1 {
   white-space: nowrap;
 }
 .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+.kbd-hint { font-size: .72rem; color: var(--text-muted); text-align: center; margin-top: 10px; letter-spacing: .02em; }
+@media (hover: none) { .kbd-hint { display: none; } }
 .tab-btn:hover:not(.active) { color: var(--text); }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
@@ -293,6 +295,7 @@ h1 {
         <button class="btn btn-ghost" id="btnSkip" onclick="skipQuestion()">わからない（答えを見る）</button>
         <button class="btn btn-primary" id="btnNext" onclick="nextQuestion()" disabled>次の問題へ →</button>
       </div>
+      <div class="kbd-hint" id="kbdHint">⌨ 1〜4：選択 ／ Enter・→：次へ ／ 0：答えを見る</div>
 
       <div style="margin-top:12px">
         <button class="btn btn-ghost" style="font-size:.78rem;padding:6px 12px" onclick="toggleDomainAcc()">ドメイン別正答率 ▾</button>
@@ -308,7 +311,7 @@ h1 {
     <div class="result-score" id="resultScore">--</div>
     <div class="result-label">正解 / 総問題数</div>
     <div class="result-detail" id="resultDetail"></div>
-    <div style="margin-top:24px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+    <div style="margin-top:24px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap" id="resultBtns">
       <button class="btn btn-primary" onclick="restartQuiz()">もう一度</button>
       <button class="btn btn-ghost" onclick="setModeAndSwitch('weak')">苦手のみ特訓</button>
     </div>
@@ -2750,6 +2753,10 @@ function renderQuestion() {
     document.getElementById('resultScore').textContent = state.score + ' / ' + tot;
     document.getElementById('resultDetail').innerHTML =
       '正答率 ' + pct + '% ' + (pct >= 70 ? '🎉 合格ライン達成！' : '📚 もう一回チャレンジしよう');
+    document.getElementById('resultScore').style.color = '';
+    document.getElementById('resultBtns').innerHTML =
+      '<button class="btn btn-primary" onclick="restartQuiz()">もう一度</button>' +
+      '<button class="btn btn-ghost" onclick="setModeAndSwitch(\'weak\')">苦手のみ特訓</button>';
     updateWeakTab();
     return;
   }
@@ -2788,6 +2795,9 @@ function renderQuestion() {
   const skipBtn = document.getElementById('btnSkip');
   skipBtn.style.display = state.examMode ? 'none' : '';   // 模試中は答え表示を無効化
   skipBtn.disabled = false;
+  document.getElementById('kbdHint').textContent = state.examMode
+    ? '⌨ 1〜4：選択 ／ Enter・→：次へ'
+    : '⌨ 1〜4：選択 ／ Enter・→：次へ ／ 0：答えを見る';
   document.getElementById('btnNext').disabled = true;
   document.getElementById('btnNext').textContent =
     (state.examMode && state.current === state.queue.length - 1) ? '採点する →' : '次の問題へ →';
@@ -2907,6 +2917,10 @@ function startExam() {
   if (!confirm('本番形式の模試を開始します。\n\n・CISSP公式配点に沿ったドメイン加重で ' +
     Object.values(EXAM_WEIGHTS).reduce((a,b)=>a+b,0) + ' 問\n・制限時間 ' + EXAM_MINUTES +
     ' 分（残り5分で赤表示・0で自動採点）\n・解答中は正誤もヒントも表示しません\n・終了後に合否（70%）と分野別の正答率を表示します\n\n開始しますか？')) return;
+  startExamCore();
+}
+
+function startExamCore() {
   state.examMode = true;
   state.examDomainStats = {};
   state.queue = buildExamQueue();
@@ -2922,6 +2936,10 @@ function startExam() {
   document.getElementById('btnExamQuit').style.display = '';
   switchTab('quiz');
   renderQuestion();
+}
+
+function retakeExam() {
+  startExamCore();   // 結果画面はrenderQuestion側で閉じる
 }
 
 function tickExamTimer() {
@@ -2985,6 +3003,11 @@ function renderExamResult(timeUp) {
     '<div style="font-size:.82rem;color:var(--text-muted);margin-bottom:12px">所要時間 ' + um + '分' + String(us).padStart(2,'0') + '秒 / ' + EXAM_MINUTES + '分</div>' +
     '<div style="text-align:left;max-width:280px;margin:0 auto;border-top:1px solid var(--border);padding-top:10px">' +
       '<div style="font-size:.78rem;color:var(--text-muted);margin-bottom:6px">分野別の正答率</div>' + domRows + '</div>';
+
+  document.getElementById('resultBtns').innerHTML =
+    '<button class="btn btn-primary" onclick="retakeExam()">📝 もう一度受験する</button>' +
+    '<button class="btn btn-ghost" onclick="setModeAndSwitch(\'weak\')">苦手のみ特訓</button>' +
+    '<button class="btn btn-ghost" onclick="setModeAndSwitch(\'all\')">通常モードに戻る</button>';
 }
 
 function quitExam() {
@@ -3148,6 +3171,58 @@ function switchTab(name) {
   document.querySelectorAll('.tab-btn')[{quiz:0,weak:1,tips:2,memo:3}[name]].classList.add('active');
   if (name === 'weak') updateWeakTab();
 }
+
+// ============================================================
+// キーボード操作（QoL）
+// ============================================================
+document.addEventListener('keydown', (e) => {
+  if (!document.getElementById('tab-quiz').classList.contains('active')) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  // 結果画面：Enterで「もう一度／もう一度受験」
+  if (document.getElementById('resultScreen').classList.contains('show')) {
+    if (e.key === 'Enter' && tag !== 'button') {
+      e.preventDefault();
+      if (state.examMode) retakeExam(); else restartQuiz();
+    }
+    return;
+  }
+
+  // 1〜4：選択肢を選ぶ（表示位置）
+  if (['1','2','3','4'].includes(e.key)) {
+    if (state.answered) return;
+    const pos = +e.key - 1;
+    const btns = document.querySelectorAll('.opt-btn');
+    if (btns[pos] && !btns[pos].disabled) {
+      e.preventDefault();
+      selectOption(state.optOrder[pos]);
+    }
+    return;
+  }
+
+  // 0：わからない（答えを見る）— 通常モードのみ
+  if (e.key === '0') {
+    const skip = document.getElementById('btnSkip');
+    if (!state.examMode && !state.answered && skip.style.display !== 'none' && !skip.disabled) {
+      e.preventDefault();
+      skipQuestion();
+    }
+    return;
+  }
+
+  // Enter / → / n：次の問題へ
+  if (e.key === 'Enter' || e.key === 'ArrowRight' || e.key === 'n') {
+    if (e.key === 'Enter' && tag === 'button') return;   // ボタンのネイティブclickに任せ二重送り防止
+    const next = document.getElementById('btnNext');
+    if (!next.disabled) {
+      e.preventDefault();
+      nextQuestion();
+    }
+    return;
+  }
+});
 
 // ============================================================
 // BOOT
