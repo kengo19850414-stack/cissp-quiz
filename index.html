@@ -217,6 +217,35 @@ h1 {
 .btn-danger { background: var(--red); color: #fff; }
 .btn:disabled { opacity: .4; cursor: default; }
 
+/* 読み上げ：声の選択（ゴーストピルと統一したカスタムセレクト） */
+.voice-select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: .78rem;
+  font-weight: 600;
+  padding: 6px 30px 6px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  max-width: 190px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M1 3l4 4 4-4' stroke='%237c85a2' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 10px;
+  transition: border-color .15s, color .15s, background-color .15s;
+}
+.voice-select:hover { border-color: var(--text-muted); }
+.voice-select:focus { outline: none; border-color: var(--blue); }
+.voice-select.active { color: var(--text); border-color: var(--blue); }
+.voice-select option { background: var(--surface); color: var(--text); font-weight: 500; }
+
 /* DOMAIN ACCURACY */
 .domain-acc { display: none; margin-top: 12px; }
 .domain-acc.show { display: block; }
@@ -324,6 +353,7 @@ h1 {
         <button class="btn btn-ghost" style="font-size:.78rem;padding:6px 12px" onclick="toggleDomainAcc()">ドメイン別正答率 ▾</button>
         <button class="btn btn-ghost" id="autoSpeakBtn" style="font-size:.78rem;padding:6px 12px" onclick="toggleAutoSpeak()">🔊 自動読み上げ：OFF</button>
         <button class="btn btn-ghost" id="speakRateBtn" style="font-size:.78rem;padding:6px 12px" onclick="cycleSpeakRate()">⏩ 速度：1x</button>
+        <select class="voice-select" id="voiceSelect" onchange="setVoice(this.value)" aria-label="読み上げの声を選択" title="読み上げの声を選択"></select>
       </div>
       <div class="domain-acc" id="domainAcc">
         <div class="domain-acc-title" style="margin-top:10px">D1 正答率</div>
@@ -2662,6 +2692,7 @@ let state = {
   showDomainAcc: false,
   autoSpeak: false,     // 回答後に解説を自動読み上げ
   speakRate: 1.0,       // 読み上げ速度（0.75〜2.0）
+  voiceURI: '',         // 読み上げの声（空=自動。SpeechSynthesisVoice.voiceURIで保存）
   optOrder: [0,1,2,3],   // 表示順→元インデックスの対応（選択肢シャッフル用）
   // ── 模試モード ──
   examMode: false,
@@ -2692,6 +2723,7 @@ function saveState() {
       memoDone: memoDone,
       autoSpeak: state.autoSpeak,
       speakRate: state.speakRate,
+      voiceURI: state.voiceURI,
     }));
   } catch (e) { /* localStorage 無効時は何もしない */ }
 }
@@ -2707,6 +2739,7 @@ function loadState() {
     }
     if (typeof data.autoSpeak === 'boolean') state.autoSpeak = data.autoSpeak;
     if (typeof data.speakRate === 'number' && SPEAK_RATES.indexOf(data.speakRate) !== -1) state.speakRate = data.speakRate;
+    if (typeof data.voiceURI === 'string') state.voiceURI = data.voiceURI;
   } catch (e) { /* 破損データは無視 */ }
 }
 
@@ -3044,6 +3077,13 @@ function speakText(text) {
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ja-JP';
   u.rate = state.speakRate || 1.0;
+  if (state.voiceURI) {                       // 選択された声があれば適用（無ければ自動）
+    try {
+      const vs = window.speechSynthesis.getVoices() || [];
+      const v = vs.find(x => x.voiceURI === state.voiceURI);
+      if (v) { u.voice = v; u.lang = v.lang || 'ja-JP'; }
+    } catch (e) { /* 不正な声オブジェクトでも読み上げ自体は止めない */ }
+  }
   u.onend   = () => { ttsActive = false; updateSpeakBtn(); };
   u.onerror = () => { ttsActive = false; updateSpeakBtn(); };
   ttsActive = true;
@@ -3094,6 +3134,62 @@ function updateSpeakRateBtn() {
   const btn = document.getElementById('speakRateBtn');
   if (!btn) return;
   btn.textContent = '⏩ 速度：' + (state.speakRate || 1.0) + 'x';
+}
+
+// ── 読み上げの声（音声エンジン）の選択 ──────────────────────
+// 既知の日本語音声名から性別の目安を付与（端末により有無は異なる）
+const VOICE_GENDER = {
+  haruka:'👩', ayumi:'👩', sayaka:'👩', nanami:'👩', mayu:'👩', kyoko:'👩',
+  'o-ren':'👩', oren:'👩', sara:'👩', ami:'👩', haruko:'👩',
+  ichiro:'👨', otoya:'👨', keita:'👨', daichi:'👨', naoki:'👨', hattori:'👨'
+};
+function voiceEmoji(name) {
+  const n = (name || '').toLowerCase();
+  for (const k in VOICE_GENDER) { if (n.indexOf(k) !== -1) return VOICE_GENDER[k]; }
+  return '🎙️';
+}
+// 端末ごとに冗長な音声名を短く整える（例：「Microsoft Haruka - Japanese (Japan)」→「Haruka」）
+function cleanVoiceName(name) {
+  return (name || '')
+    .replace(/^Microsoft\s+/i, '')
+    .replace(/\s*-\s*Japanese.*$/i, '')
+    .replace(/\s+Desktop$/i, '')
+    .replace(/\s*\([^)]*\)\s*$/, '')
+    .trim() || name;
+}
+
+// 端末で使える日本語音声を取得してセレクトに反映（声が無ければ非表示）
+function loadVoices() {
+  if (!TTS_SUPPORTED) return;
+  const sel = document.getElementById('voiceSelect');
+  if (!sel) return;
+  const ja = (window.speechSynthesis.getVoices() || []).filter(v => /^ja/i.test(v.lang));
+  if (ja.length === 0) { sel.style.display = 'none'; return; }
+  sel.style.display = '';
+  sel.innerHTML = '';
+  const auto = document.createElement('option');
+  auto.value = ''; auto.textContent = '🎙️ 声：自動';
+  sel.appendChild(auto);
+  ja.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v.voiceURI;
+    o.textContent = voiceEmoji(v.name) + ' ' + cleanVoiceName(v.name);
+    sel.appendChild(o);
+  });
+  // 保存済みの声が一覧にあれば選択、無ければ自動に戻す
+  const exists = ja.some(v => v.voiceURI === state.voiceURI);
+  if (!exists && state.voiceURI) { state.voiceURI = ''; saveState(); }
+  sel.value = exists ? state.voiceURI : '';
+  sel.classList.toggle('active', !!state.voiceURI);
+}
+
+function setVoice(uri) {
+  state.voiceURI = uri || '';
+  saveState();
+  const sel = document.getElementById('voiceSelect');
+  if (sel) { sel.value = state.voiceURI; sel.classList.toggle('active', !!state.voiceURI); }
+  // 選んだ声でサンプルを読み上げて確認できるように
+  if (TTS_SUPPORTED) speakText(state.voiceURI ? 'この声で読み上げます。' : '自動の声に戻しました。');
 }
 
 function nextQuestion() { state.current++; renderQuestion(); }
@@ -3334,11 +3430,11 @@ const MEMOS = [
   // ── 任意の強化候補（必須ではない・今後の余力で）──
   { pri:'🟢', text:'（任意）問題数を増やす：各ドメインに問題を追加し出題プールを拡大。本番の幅広い出題に備え、合格力に最も直結する強化', done:false },
   { pri:'🟢', text:'（任意）模試の復習機能：模試終了後に間違えた問題だけをISC2 5構造解説付きで振り返る専用画面を追加', done:false },
-  { pri:'🟢', text:'（任意）読み上げの調整：声（男性/女性・音声エンジン）の選択UIを追加', done:false },
   // ── UX改善（完了）──
   { pri:'✅', text:'【完了】操作性の向上：1〜4キーで選択肢を選択／Enter・→で次の問題へ／0で答えを見る、模試に「もう一度受験する」ボタンを追加', done:true },
   { pri:'✅', text:'【完了】解説の読み上げ：回答後にISC2 5構造解説を日本語音声で読み上げ（🔊ボタン＋「自動読み上げ」トグル・設定は保存・模試中はOFF）', done:true },
   { pri:'✅', text:'【完了】読み上げ速度の変更：「⏩ 速度」ボタンで0.75x/1x/1.25x/1.5x/2xを順送り切替（設定は保存・押すたびにサンプル音声で速度を確認）。通勤学習で聞き取りやすい速度に調整可能', done:true },
+  { pri:'✅', text:'【完了】読み上げの声の選択：端末で使える日本語音声を一覧表示し、声（男性👨/女性👩・音声エンジン）を選択できるドロップダウンを追加。選ぶとその声でサンプル再生・設定は保存。声が無い端末では自動的に非表示', done:true },
   { pri:'✅', text:'【完了】スマホ表示の修正：タブが画面幅で見切れる不具合を解消（タブを折り返し表示）。iPhoneでの学習に対応', done:true },
   // ── 完了済み ──
   { pri:'✅', text:'各ドメインを20問に拡充後、試験のクセ問題を3問追加し全163問（D1/D3/D7が各21問）', done:true },
@@ -3449,12 +3545,17 @@ if (!TTS_SUPPORTED) {
   const sb = document.getElementById('speakBtn');
   const ab = document.getElementById('autoSpeakBtn');
   const rb = document.getElementById('speakRateBtn');
+  const vs = document.getElementById('voiceSelect');
   if (sb) sb.style.display = 'none';
   if (ab) ab.style.display = 'none';
   if (rb) rb.style.display = 'none';
+  if (vs) vs.style.display = 'none';
 } else {
   updateAutoSpeakBtn();
   updateSpeakRateBtn();
+  loadVoices();
+  // 音声リストは非同期で読み込まれる端末があるため、変化時に再反映
+  window.speechSynthesis.onvoiceschanged = loadVoices;
 }
 </script>
 </body>
